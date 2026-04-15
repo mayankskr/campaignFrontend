@@ -1,23 +1,38 @@
 /**
- * Status filter card configuration.
- * Previously defined inline in PPCDashboard, ManagerDashboard, and PMDashboard (with 4 items).
- * The full 5-item set covers all statuses; PM's internal version only used 4 (no "not done").
+ * Filter card configurations.
+ *
+ * FILTER_CARDS           — 5-item set for PPC and Manager dashboards.
+ * PM_FILTER_CARDS        — 5-item set for PM campaigns (adds Pending).
+ * OPEN_REQUEST_CARDS     — 3-item stat cards for PM open-requests section.
  */
 import { T } from "./theme.js";
 
-/** Full filter set — used by PPC and Manager dashboards */
+/** PPC + Manager dashboards — 5 statuses */
 export const FILTER_CARDS = [
-  { id: "transfer",  label: "In Review",  color: T.blue,  bg: T.blueBg  },
-  { id: "approve",   label: "Approved",   color: T.teal,  bg: T.tealBg  },
-  { id: "done",      label: "Done",       color: T.green, bg: T.greenBg },
-  { id: "cancel",    label: "Cancelled",  color: T.red,   bg: T.redBg   },
-  { id: "not done",  label: "Not Done",   color: T.amber, bg: T.amberBg },
+  { id: "transfer",  label: "In Review",  color: T.blue,   bg: T.blueBg  },
+  { id: "approve",   label: "Approved",   color: T.teal,   bg: T.tealBg  },
+  { id: "done",      label: "Done",       color: T.green,  bg: T.greenBg },
+  { id: "cancel",    label: "Cancelled",  color: T.red,    bg: T.redBg   },
+  { id: "not done",  label: "Not Done",   color: T.amber,  bg: T.amberBg },
 ];
 
-/** 4-item set used inside PM's self-contained CampaignsTable */
+/**
+ * PM all-campaigns section — 5 cards including Pending (no PM action yet).
+ * FIX: "Pending" was missing so PM had no way to filter campaigns awaiting action.
+ */
 export const PM_FILTER_CARDS = [
-  { id: "transfer",  label: "In Review",  color: T.blue,  bg: T.blueBg  },
-  { id: "approve",   label: "Approved",   color: T.teal,  bg: T.tealBg  },
-  { id: "done",      label: "Done",       color: T.green, bg: T.greenBg },
-  { id: "cancel",    label: "Cancelled",  color: T.red,   bg: T.redBg   },
+  { id: "pending",   label: "Pending",    color: T.amber,  bg: T.amberBg },
+  { id: "approve",   label: "Approved",   color: T.teal,   bg: T.tealBg  },
+  { id: "done",      label: "Done",       color: T.green,  bg: T.greenBg },
+  { id: "cancel",    label: "Cancelled",  color: T.red,    bg: T.redBg   },
+];
+
+/**
+ * PM open-requests section stat cards.
+ * Shows summary counts for campaigns awaiting IT, IT-completed, and fully done.
+ */
+export const OPEN_REQUEST_CARDS = [
+  { id: "waiting",   label: "Waiting IT", color: T.amber,  bg: T.amberBg },
+  { id: "acked",     label: "IT Done",    color: T.teal,   bg: T.tealBg  },
+  { id: "done",      label: "Done",       color: T.green,  bg: T.greenBg },
 ];

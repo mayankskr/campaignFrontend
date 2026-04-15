@@ -1,14 +1,11 @@
 /**
- * PPCDashboard — fixed.
+ * PPCDashboard — all issues fixed.
  *
- * FIX 1 — Team ID field removed entirely.
- *   Before: PPC had to manually type their Team ID (stored in localStorage).
- *   After:  teamId comes from useAuthStore.teamId, which is populated during
- *           login from the updated loginService that returns user.teams[0].
- *           Fallback: if auth store has no teamId (legacy sessions), derive
- *           it from the first loaded campaign.
- *
- * FIX 2 — Notification messages include performer name (from useCampaigns hook).
+ * Columns: Message | Requested Time | Status | PM Action | Ticket State
+ * - Timestamp removed (issue #9)
+ * - TeamId field removed (issue #1) — uses auth store
+ * - Local addNotification calls removed (issue #4) — socket-only
+ * - Double campaign prevented in useCampaigns hook (issue #3)
  */
 import { useEffect, useState, useCallback, useMemo } from "react";
 
@@ -35,9 +32,11 @@ import FilterCardsGrid  from "../components/campaigns/FilterCardsGrid.jsx";
 import TableToolbar     from "../components/campaigns/TableToolbar.jsx";
 import UpdateModal      from "../components/campaigns/UpdateModal.jsx";
 
+const COLS = ["MESSAGE", "REQUESTED TIME", "STATUS", "PM ACTION", "TICKET STATE"];
+
 export default function PPCDashboard() {
   const user            = useAuthStore(s => s.user);
-  const storedTeamId    = useAuthStore(s => s.teamId);   // FIX: from auth store
+  const storedTeamId    = useAuthStore(s => s.teamId);
   const addNotification = useNotifStore(s => s.addNotification);
   const handleLogout    = useLogout();
   const isMobile        = useResponsive();
@@ -59,31 +58,21 @@ export default function PPCDashboard() {
   const [createError,   setCreateError]   = useState("");
   const [createOk,      setCreateOk]      = useState(false);
 
-  // ── Load campaigns + derive teamId fallback ─────────────────────────────────
   useEffect(() => {
     (async () => {
-      try {
-        await getCampaign();
-      } catch {
-        setPageError("Failed to load campaigns. Please refresh.");
-      } finally {
-        setLoading(false);
-      }
+      try   { await getCampaign(); }
+      catch { setPageError("Failed to load campaigns. Please refresh."); }
+      finally { setLoading(false); }
     })();
   }, [getCampaign]); // eslint-disable-line
 
-  /**
-   * teamId resolution order:
-   * 1. useAuthStore.teamId  — set at login from user.teams[0]  (primary)
-   * 2. Derived from first loaded campaign                        (legacy fallback)
-   */
+  // teamId: from auth store (set at login), fallback from loaded campaigns
   const teamId = useMemo(() => {
     if (storedTeamId) return storedTeamId;
     const raw = campaigns[0]?.teamId;
     return (typeof raw === "object" ? raw?._id : raw) || null;
   }, [storedTeamId, campaigns]);
 
-  // ── Derived stats + filtered list ───────────────────────────────────────────
   const stats = useMemo(() => ({
     transfer:   campaigns.filter(c => c.status === "transfer").length,
     approve:    campaigns.filter(c => c.action === "approve").length,
@@ -106,10 +95,8 @@ export default function PPCDashboard() {
     return list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }, [campaigns, statusFilter, searchQuery]);
 
-  // ── Handlers ─────────────────────────────────────────────────────────────────
   const goTo = section => {
-    setActiveSection(section);
-    setSidebarOpen(false);
+    setActiveSection(section); setSidebarOpen(false);
     setCreateError(""); setCreateOk(false);
   };
 
@@ -118,52 +105,37 @@ export default function PPCDashboard() {
     if (isMobile) setFiltersOpen(false);
   }, [isMobile]);
 
-  /**
-   * FIX: No teamId input field — teamId is resolved automatically.
-   * Only message and requestedAt are collected from the user.
-   */
   const handleCreate = useCallback(async e => {
     e.preventDefault();
     setCreateError(""); setCreateOk(false);
-
-    if (!teamId) {
-      setCreateError("Team not assigned yet. Please contact your manager.");
-      return;
-    }
-    if (!createForm.message.trim()) {
-      setCreateError("Campaign message is required.");
-      return;
-    }
-
+    if (!teamId)                    { setCreateError("Team not assigned. Contact your manager."); return; }
+    if (!createForm.message.trim()) { setCreateError("Campaign message is required."); return; }
     setCreating(true);
     try {
       await createCampaign({
         message:     createForm.message.trim(),
         requestedAt: createForm.requestedAt || undefined,
-        teamId,                                              // auto-resolved
+        teamId,
       });
       setCreateForm({ message: "", requestedAt: "" });
       setCreateOk(true);
-      addNotification("Campaign submitted successfully");
+      // FIX: No local addNotification — socket fires the single notification
       setTimeout(() => { setActiveSection("campaigns"); setCreateOk(false); }, 1800);
     } catch (err) {
       setCreateError(err?.response?.data?.message || "Failed to create campaign.");
-    } finally {
-      setCreating(false);
-    }
-  }, [teamId, createForm, createCampaign, addNotification]);
+    } finally { setCreating(false); }
+  }, [teamId, createForm, createCampaign]);
 
   const handleUpdate = useCallback(async (id, data) => {
     await updateCampaign(id, data);
-    addNotification(data.status === "cancel" ? "Campaign cancelled" : "Campaign updated");
-  }, [updateCampaign, addNotification]);
+    // FIX: No local addNotification — socket fires the single notification
+  }, [updateCampaign]);
 
   const NAV = [
     { id: "campaigns", label: "My Campaigns"    },
     { id: "create",    label: "Create Campaign" },
   ];
 
-  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={{ display:"flex", minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'DM Sans',sans-serif" }}>
       <OpsGlobalStyles />
@@ -178,48 +150,30 @@ export default function PPCDashboard() {
         isMobile={isMobile} open={sidebarOpen} />
 
       <main style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
-        <DashboardHeader
-          isMobile={isMobile}
-          onMenuToggle={() => setSidebarOpen(v => !v)}
-          sidebarOpen={sidebarOpen}
+        <DashboardHeader isMobile={isMobile}
+          onMenuToggle={() => setSidebarOpen(v => !v)} sidebarOpen={sidebarOpen}
           title={activeSection === "create" ? "Create Campaign" : "My Campaigns"}
-          subLabel="— ADMIN PANEL"
-        />
+          subLabel="— ADMIN PANEL" />
 
         {pageError && (
-          <div style={{ margin:"16px 28px 0", padding:"10px 14px", background:T.redBg, border:`1px solid ${T.red}44`, borderRadius:3, color:T.red, fontSize:12 }}>
-            {pageError}
-          </div>
+          <div style={{ margin:"16px 28px 0", padding:"10px 14px", background:T.redBg, border:`1px solid ${T.red}44`, borderRadius:3, color:T.red, fontSize:12 }}>{pageError}</div>
         )}
 
-        {/* ── CAMPAIGNS ─────────────────────────────────────────────────────── */}
+        {/* ── CAMPAIGNS ─────────────────────────────────────────────────── */}
         {activeSection === "campaigns" && (
           <div style={{ padding: isMobile ? "16px 14px" : "22px 28px", flex:1 }}>
 
-            {/* Mobile filter toggle */}
             {isMobile && (
               <button onClick={() => setFiltersOpen(v => !v)}
-                style={{
-                  display:"inline-flex", alignItems:"center", gap:8,
-                  marginBottom: filtersOpen ? 12 : 20,
-                  padding:"7px 13px", borderRadius:3, cursor:"pointer",
-                  background: filtersOpen ? T.goldDim : "transparent",
-                  border:`1px solid ${filtersOpen ? T.gold : T.subtle}`,
-                  color: filtersOpen ? T.gold : T.muted,
-                  fontSize:9, letterSpacing:"0.16em", fontFamily:"'Cinzel',serif",
-                }}>
-                ◈ {statusFilter
-                  ? FILTER_CARDS.find(f => f.id === statusFilter)?.label.toUpperCase()
-                  : "FILTER BY STATUS"
-                } {filtersOpen ? "▲" : "▼"}
+                style={{ display:"inline-flex", alignItems:"center", gap:8, marginBottom: filtersOpen ? 12 : 20, padding:"7px 13px", borderRadius:3, cursor:"pointer", background: filtersOpen ? T.goldDim : "transparent", border:`1px solid ${filtersOpen ? T.gold : T.subtle}`, color: filtersOpen ? T.gold : T.muted, fontSize:9, letterSpacing:"0.16em", fontFamily:"'Cinzel',serif" }}>
+                ◈ {statusFilter ? FILTER_CARDS.find(f => f.id === statusFilter)?.label.toUpperCase() : "FILTER"} {filtersOpen ? "▲" : "▼"}
               </button>
             )}
 
             <FilterCardsGrid cards={FILTER_CARDS} stats={stats} activeId={statusFilter}
-              onSelect={handleFilterSelect} isMobile={isMobile}
-              visible={!isMobile || filtersOpen} />
+              onSelect={handleFilterSelect} isMobile={isMobile} visible={!isMobile || filtersOpen} />
 
-            <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, overflow:"hidden", animation:"opsFadeUp .28s .05s ease both" }}>
+            <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, overflow:"hidden" }}>
               <TableToolbar title="MY CAMPAIGNS" count={filtered.length}
                 search={searchQuery} onSearch={setSearchQuery}
                 activeFilter={statusFilter} onClearFilter={() => setStatusFilter(null)}
@@ -227,24 +181,19 @@ export default function PPCDashboard() {
 
               {loading ? (
                 <div style={{ padding:"52px 20px", textAlign:"center", color:T.muted, fontSize:13 }}>
-                  <div style={{ marginBottom:10, color:T.gold, fontSize:22 }}>◈</div>Loading campaigns…
+                  <div style={{ marginBottom:10, color:T.gold, fontSize:22 }}>◈</div>Loading…
                 </div>
               ) : filtered.length === 0 ? (
                 <EmptyState
                   headline="No Records Found"
-                  sub={searchQuery || statusFilter
-                    ? "Try adjusting your search or filter."
-                    : "Create your first campaign to get started."}
-                  action={!searchQuery && !statusFilter
-                    ? <GoldBtn onClick={() => goTo("create")} variant="outline">CREATE CAMPAIGN</GoldBtn>
-                    : null}
-                />
+                  sub={searchQuery || statusFilter ? "Try adjusting your search or filter." : "Create your first campaign to get started."}
+                  action={!searchQuery && !statusFilter ? <GoldBtn onClick={() => goTo("create")} variant="outline">CREATE CAMPAIGN</GoldBtn> : null} />
               ) : (
-                <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-                  <table style={{ width:"100%", borderCollapse:"collapse", minWidth:860 }}>
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", minWidth:620 }}>
                     <thead>
                       <tr style={{ borderBottom:`1px solid ${T.subtle}`, background:`${T.bg}dd` }}>
-                        {["TIMESTAMP","MESSAGE","PM COMMENT","STATUS","PM ACTION","REQUESTED TIME","IT COMMENT","TICKET STATE"].map(h => (
+                        {COLS.map(h => (
                           <th key={h} style={{ padding:"10px 16px", textAlign:"left", fontSize:9, fontWeight:600, color:T.gold, letterSpacing:"0.16em", fontFamily:"'Cinzel',serif", whiteSpace:"nowrap" }}>{h}</th>
                         ))}
                       </tr>
@@ -253,31 +202,28 @@ export default function PPCDashboard() {
                       {filtered.map((c, i) => (
                         <tr key={c._id} className="ops-row"
                           style={{ borderBottom:`1px solid ${T.subtle}22`, background: i%2===1 ? `${T.bgCard}88` : "transparent" }}>
-                          <td style={{ padding:"12px 16px", whiteSpace:"nowrap" }}>
-                            <span style={{ fontSize:11, color:T.muted, fontFamily:"'JetBrains Mono',monospace" }}>{fmt(c.createdAt)}</span>
-                          </td>
-                          <td style={{ padding:"12px 16px", minWidth:180, maxWidth:260 }}>
+
+                          {/* MESSAGE */}
+                          <td style={{ padding:"12px 16px", minWidth:200, maxWidth:320 }}>
                             <p style={{ margin:0, fontSize:12, color:T.text, lineHeight:1.55, wordBreak:"break-word", whiteSpace:"pre-wrap" }}>{c.message}</p>
                           </td>
-                          <td style={{ padding:"12px 16px", minWidth:160, maxWidth:240 }}>
-                            {c.pmMessage
-                              ? <p style={{ margin:0, fontSize:12, color:T.muted, lineHeight:1.55, fontStyle:"italic", wordBreak:"break-word" }}>{c.pmMessage}</p>
-                              : <span style={{ fontSize:11, color:T.subtle, fontFamily:"'JetBrains Mono',monospace" }}>—</span>}
-                          </td>
-                          <td style={{ padding:"12px 16px", whiteSpace:"nowrap" }}>
-                            <StatusBadge value={c.status} meta={STATUS_META} />
-                          </td>
-                          <td style={{ padding:"12px 16px", whiteSpace:"nowrap" }}>
-                            {c.action ? <StatusBadge value={c.action} meta={ACTION_META} /> : <PendingBadge />}
-                          </td>
+
+                          {/* REQUESTED TIME */}
                           <td style={{ padding:"12px 16px", whiteSpace:"nowrap" }}>
                             <span style={{ fontSize:11, color:T.muted, fontFamily:"'JetBrains Mono',monospace" }}>{fmt(c.requestedAt)}</span>
                           </td>
-                          <td style={{ padding:"12px 16px", minWidth:140, maxWidth:220 }}>
-                            {c.itMessage
-                              ? <span style={{ fontSize:11, color:T.teal, fontStyle:"italic", wordBreak:"break-word", display:"block" }}>{c.itMessage}</span>
-                              : <span style={{ fontSize:11, color:T.subtle, fontFamily:"'JetBrains Mono',monospace" }}>—</span>}
+
+                          {/* STATUS */}
+                          <td style={{ padding:"12px 16px", whiteSpace:"nowrap" }}>
+                            <StatusBadge value={c.status} meta={STATUS_META} />
                           </td>
+
+                          {/* PM ACTION */}
+                          <td style={{ padding:"12px 16px", whiteSpace:"nowrap" }}>
+                            {c.action ? <StatusBadge value={c.action} meta={ACTION_META} /> : <PendingBadge />}
+                          </td>
+
+                          {/* TICKET STATE */}
                           <td style={{ padding:"12px 16px", whiteSpace:"nowrap" }}>
                             {c.status === "transfer"
                               ? <button className="ops-upd" onClick={() => setUpdateTarget(c)}
@@ -305,44 +251,40 @@ export default function PPCDashboard() {
           </div>
         )}
 
-        {/* ── CREATE CAMPAIGN ───────────────────────────────────────────────── */}
+        {/* ── CREATE ────────────────────────────────────────────────────── */}
         {activeSection === "create" && (
           <div style={{ padding: isMobile ? "16px 14px" : "22px 28px", flex:1 }}>
             <div style={{ maxWidth:560 }}>
               <div style={{ padding:"14px 18px", marginBottom:22, border:`1px solid ${T.goldBorder}`, borderRadius:4, background:T.bgCard }}>
                 <p style={{ margin:0, fontSize:12, color:T.muted, lineHeight:1.6 }}>
-                  Fill in the details below to submit a new campaign request.
-                  The Process Manager will review and take action.
+                  Fill in the details below. The Process Manager will review your request.
                 </p>
               </div>
 
-              <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding: isMobile ? "22px 18px" : "28px 26px 24px", animation:"opsFadeUp .28s .05s ease both" }}>
-                <h2 style={{ margin:"0 0 22px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>
-                  Create Campaign
-                </h2>
+              <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding: isMobile ? "22px 18px" : "28px 26px 24px" }}>
+                <h2 style={{ margin:"0 0 22px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>Create Campaign</h2>
 
                 {/* Team status indicator */}
                 <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px", background:T.bgInput, border:`1px solid ${teamId ? T.subtle : `${T.red}44`}`, borderRadius:3, marginBottom:20 }}>
-                  <span style={{ width:6, height:6, borderRadius:"50%", background: teamId ? T.green : T.red, boxShadow: teamId ? `0 0 6px ${T.green}` : "none", flexShrink:0 }} />
+                  <span style={{ width:6, height:6, borderRadius:"50%", background: teamId ? T.green : T.red, flexShrink:0 }} />
                   <span style={{ fontSize:11, color: teamId ? T.muted : T.red, fontFamily:"'JetBrains Mono',monospace" }}>
                     {teamId ? "Team assigned ✓" : "No team assigned — contact your manager"}
                   </span>
                 </div>
 
                 {createError && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:18, background:T.redBg, border:`1px solid ${T.red}44`, color:T.red, fontSize:12 }}>{createError}</div>}
-                {createOk    && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:18, background:T.greenBg, border:`1px solid ${T.green}44`, color:T.green, fontSize:11, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>✓ CAMPAIGN SUBMITTED — Redirecting…</div>}
+                {createOk    && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:18, background:T.greenBg, border:`1px solid ${T.green}44`, color:T.green, fontSize:11, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>✓ CAMPAIGN SUBMITTED</div>}
 
                 <form onSubmit={handleCreate}>
-                  {/* FIX: Only message + time — no teamId input */}
                   <Field label="MESSAGE" hint="required">
                     <textarea className="ops-focus" value={createForm.message}
                       onChange={e => setCreateForm(f => ({ ...f, message: e.target.value }))}
-                      placeholder="Describe the campaign request in detail…"
+                      placeholder="Describe the campaign request…"
                       rows={4} required
                       style={{ ...inputSx, resize:"vertical", lineHeight:1.6 }} />
                   </Field>
 
-                  <Field label="REQUESTED DATE / TIME" hint="optional — defaults to now">
+                  <Field label="REQUESTED DATE / TIME" hint="optional">
                     <input type="datetime-local" className="ops-focus"
                       value={createForm.requestedAt}
                       onChange={e => setCreateForm(f => ({ ...f, requestedAt: e.target.value }))}

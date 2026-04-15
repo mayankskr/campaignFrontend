@@ -1,31 +1,27 @@
 /**
- * ManagerDashboard — final refactored version.
+ * ManagerDashboard — fixed.
  *
- * CHANGES from previous pass:
- *  - handleLogout             → useLogout() hook
- *  - socket + setState calls  → useCampaigns({ onNotification })
- *  - Filter cards grid        → <FilterCardsGrid>
- *  - Table toolbar            → <TableToolbar>
- *  - "No Records Found"       → <EmptyState>
- *  - "PENDING" inline badge   → <PendingBadge>
- *  - Team chip JSX variable   → <TeamChip> component
- *  - createUser / deleteUser  → services/userService.js
- *  - loadTeamInfo             → useTeam() hook
+ * Columns: Created By | Message | Requested Time | Status | PM Action | Ticket State
+ * - Timestamp removed (issue #9)
+ * - PM Comment, IT Comment removed from manager view
+ * - Creator name shown (populated from backend)
+ * - Local addNotification calls removed (socket-only)
  */
 import { useEffect, useState, useCallback, useMemo } from "react";
 
 import useAuthStore  from "../stores/useAuthStore.js";
 import useNotifStore from "../stores/useNotificationStore.js";
 
-import { useResponsive }           from "../hooks/useResponsive.js";
-import { useCampaigns }            from "../hooks/useCampaigns.js";
-import { useLogout }               from "../hooks/useLogout.js";
-import { useTeam }                 from "../hooks/useTeam.js";
-import { T, inputSx }             from "../constants/theme.js";
+import { useResponsive }            from "../hooks/useResponsive.js";
+import { useCampaigns }             from "../hooks/useCampaigns.js";
+import { useLogout }                from "../hooks/useLogout.js";
+import { useTeam }                  from "../hooks/useTeam.js";
+import { T, inputSx }              from "../constants/theme.js";
 import { STATUS_META, ACTION_META } from "../constants/statusMeta.js";
-import { FILTER_CARDS }            from "../constants/filterCards.js";
-import { fmt, initials }           from "../utils/formatters.js";
-import { createUser, deleteUser }  from "../services/userService.js";
+import { FILTER_CARDS }             from "../constants/filterCards.js";
+import { initials }                 from "../utils/formatters.js";
+import { fmt }                      from "../utils/formatters.js";
+import { createUser, deleteUser }   from "../services/userService.js";
 
 import OpsGlobalStyles  from "../components/common/OpsGlobalStyles.jsx";
 import StatusBadge      from "../components/common/StatusBadge.jsx";
@@ -41,6 +37,8 @@ import TableToolbar     from "../components/campaigns/TableToolbar.jsx";
 import UpdateModal      from "../components/campaigns/UpdateModal.jsx";
 import DeleteUserModal  from "../components/users/DeleteUserModal.jsx";
 import UserCard         from "../components/users/UserCard.jsx";
+
+const COLS = ["CREATED BY", "MESSAGE", "REQUESTED TIME", "STATUS", "PM ACTION", "TICKET STATE"];
 
 export default function ManagerDashboard() {
   const user            = useAuthStore(s => s.user);
@@ -72,7 +70,7 @@ export default function ManagerDashboard() {
 
   useEffect(() => {
     (async () => {
-      try { await Promise.all([getCampaign(), loadTeamInfo()]); }
+      try   { await Promise.all([getCampaign(), loadTeamInfo()]); }
       catch { setPageError("Failed to load data. Please refresh."); }
       finally { setLoading(false); }
     })();
@@ -124,16 +122,16 @@ export default function ManagerDashboard() {
     try {
       await createCampaign({ message: createForm.message.trim(), requestedAt: createForm.requestedAt || undefined, teamId });
       setCreateForm({ message: "", requestedAt: "" }); setCreateOk(true);
-      addNotification("Campaign created successfully");
+      // FIX: no local notification
       setTimeout(() => { setActiveSection("campaigns"); setCreateOk(false); }, 1800);
     } catch (err) { setCreateError(err?.response?.data?.message || "Failed to create campaign."); }
-    finally       { setCreating(false); }
-  }, [teamId, createForm, createCampaign, addNotification]);
+    finally { setCreating(false); }
+  }, [teamId, createForm, createCampaign]);
 
   const handleUpdate = useCallback(async (id, data) => {
     await updateCampaign(id, data);
-    addNotification(data.status === "cancel" ? "Campaign cancelled" : "Campaign updated");
-  }, [updateCampaign, addNotification]);
+    // FIX: no local notification
+  }, [updateCampaign]);
 
   const handleCreateUser = useCallback(async e => {
     e.preventDefault(); setUserError(""); setUserOk(false);
@@ -142,18 +140,15 @@ export default function ManagerDashboard() {
     try {
       await createUser({ ...userForm, role: "ppc" });
       setUserForm({ username: "", email: "", password: "" }); setUserOk(true);
-      addNotification(`PPC user "${userForm.username}" created`);
       await loadTeamInfo();
       setTimeout(() => setUserOk(false), 3000);
     } catch (err) { setUserError(err?.response?.data?.message || "Failed to create user."); }
-    finally       { setCreatingUser(false); }
-  }, [userForm, addNotification, loadTeamInfo]);
+    finally { setCreatingUser(false); }
+  }, [userForm, loadTeamInfo]);
 
   const handleDeleteUser = useCallback(async id => {
-    await deleteUser(id);
-    addNotification("PPC user removed from team");
-    await loadTeamInfo();
-  }, [addNotification, loadTeamInfo]);
+    await deleteUser(id); await loadTeamInfo();
+  }, [loadTeamInfo]);
 
   const NAV = [
     { id: "campaigns", label: "Team Campaigns", count: campaigns.length },
@@ -186,10 +181,9 @@ export default function ManagerDashboard() {
         {activeSection === "campaigns" && (
           <div style={{ padding: isMobile ? "16px 14px" : "22px 28px", flex:1 }}>
             <FilterCardsGrid cards={FILTER_CARDS} stats={stats} activeId={statusFilter}
-              onSelect={id => setStatusFilter(p => p === id ? null : id)}
-              isMobile={isMobile} />
+              onSelect={id => setStatusFilter(p => p === id ? null : id)} isMobile={isMobile} />
 
-            <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, overflow:"hidden", animation:"opsFadeUp .28s .05s ease both" }}>
+            <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, overflow:"hidden" }}>
               <TableToolbar title="TEAM CAMPAIGNS" count={filtered.length}
                 search={searchQuery} onSearch={setSearchQuery}
                 activeFilter={statusFilter} onClearFilter={() => setStatusFilter(null)}
@@ -197,59 +191,76 @@ export default function ManagerDashboard() {
 
               {loading ? (
                 <div style={{ padding:"52px 20px", textAlign:"center", color:T.muted, fontSize:13 }}>
-                  <div style={{ marginBottom:10, color:T.gold, fontSize:22 }}>◈</div>Loading campaigns…
+                  <div style={{ marginBottom:10, color:T.gold, fontSize:22 }}>◈</div>Loading…
                 </div>
               ) : filtered.length === 0 ? (
-                <EmptyState
-                  headline="No Records Found"
-                  sub={searchQuery || statusFilter ? "Adjust your search or filter." : "No team campaigns yet."}
-                  action={!searchQuery && !statusFilter ? <GoldBtn variant="outline" onClick={() => goTo("create")}>CREATE CAMPAIGN</GoldBtn> : null}
-                />
+                <EmptyState headline="No Records Found"
+                  sub={searchQuery || statusFilter ? "Adjust search or filter." : "No team campaigns yet."}
+                  action={!searchQuery && !statusFilter ? <GoldBtn variant="outline" onClick={() => goTo("create")}>CREATE CAMPAIGN</GoldBtn> : null} />
               ) : (
-                <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-                  <table style={{ width:"100%", borderCollapse:"collapse", minWidth:920 }}>
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", minWidth:720 }}>
                     <thead>
                       <tr style={{ borderBottom:`1px solid ${T.subtle}`, background:`${T.bg}dd` }}>
-                        {["SUBMITTED BY","TIMESTAMP","MESSAGE","PM COMMENT","STATUS","PM ACTION","REQUESTED","IT COMMENT","TICKET"].map(h => (
+                        {COLS.map(h => (
                           <th key={h} style={{ padding:"10px 14px", textAlign:"left", fontSize:9, fontWeight:600, color:T.gold, letterSpacing:"0.14em", fontFamily:"'Cinzel',serif", whiteSpace:"nowrap" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {filtered.map((c, i) => {
-                        const creatorId = typeof c.createdBy === "object" ? c.createdBy?._id : c.createdBy;
-                        const member    = teamInfo?.members?.find(m => m._id === creatorId);
-                        const isOwn     = !member;
+                        // createdBy is populated by backend: { _id, username, email }
+                        const creatorName = typeof c.createdBy === "object"
+                          ? c.createdBy?.username
+                          : null;
+                        const creatorId   = typeof c.createdBy === "object" ? c.createdBy?._id : c.createdBy;
+                        const member      = teamInfo?.members?.find(m => String(m._id) === String(creatorId));
+                        const isOwn       = !member;
+
                         return (
                           <tr key={c._id} className="ops-row"
                             style={{ borderBottom:`1px solid ${T.subtle}22`, background: i%2===1 ? `${T.bgCard}88` : "transparent" }}>
+
+                            {/* CREATED BY */}
                             <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}>
                               <div style={{ display:"flex", alignItems:"center", gap:7 }}>
                                 <div style={{ width:22, height:22, borderRadius:"50%", background: isOwn ? T.goldDim : T.purpleBg, border:`1px solid ${isOwn ? T.gold : T.purple}44`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontWeight:700, color: isOwn ? T.gold : T.purple, fontFamily:"'Cinzel',serif", flexShrink:0 }}>
-                                  {initials(member?.username || user || "M")}
+                                  {initials(creatorName || user || "M")}
                                 </div>
-                                <span style={{ fontSize:11, color: isOwn ? T.gold : T.text }}>{member?.username || user || "—"}</span>
+                                <span style={{ fontSize:11, color: isOwn ? T.gold : T.text }}>{creatorName || user || "—"}</span>
                               </div>
                             </td>
-                            <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}><span style={{ fontSize:11, color:T.muted, fontFamily:"'JetBrains Mono',monospace" }}>{fmt(c.createdAt)}</span></td>
-                            <td style={{ padding:"12px 14px", minWidth:160, maxWidth:240 }}><p style={{ margin:0, fontSize:12, color:T.text, lineHeight:1.55, wordBreak:"break-word", whiteSpace:"pre-wrap" }}>{c.message}</p></td>
-                            <td style={{ padding:"12px 14px", minWidth:130, maxWidth:200 }}>
-                              {c.pmMessage ? <p style={{ margin:0, fontSize:12, color:T.muted, lineHeight:1.55, fontStyle:"italic", wordBreak:"break-word" }}>{c.pmMessage}</p>
-                                : <span style={{ fontSize:11, color:T.subtle, fontFamily:"'JetBrains Mono',monospace" }}>—</span>}
+
+                            {/* MESSAGE */}
+                            <td style={{ padding:"12px 14px", minWidth:160, maxWidth:280 }}>
+                              <p style={{ margin:0, fontSize:12, color:T.text, lineHeight:1.55, wordBreak:"break-word", whiteSpace:"pre-wrap" }}>{c.message}</p>
                             </td>
-                            <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}><StatusBadge value={c.status} meta={STATUS_META} /></td>
+
+                            {/* REQUESTED TIME */}
+                            <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}>
+                              <span style={{ fontSize:11, color:T.muted, fontFamily:"'JetBrains Mono',monospace" }}>{fmt(c.requestedAt)}</span>
+                            </td>
+
+                            {/* STATUS */}
+                            <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}>
+                              <StatusBadge value={c.status} meta={STATUS_META} />
+                            </td>
+
+                            {/* PM ACTION */}
                             <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}>
                               {c.action ? <StatusBadge value={c.action} meta={ACTION_META} /> : <PendingBadge />}
                             </td>
-                            <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}><span style={{ fontSize:11, color:T.muted, fontFamily:"'JetBrains Mono',monospace" }}>{fmt(c.requestedAt)}</span></td>
-                            <td style={{ padding:"12px 14px", minWidth:120, maxWidth:180 }}>
-                              {c.itMessage ? <span style={{ fontSize:11, color:T.teal, fontStyle:"italic", wordBreak:"break-word", display:"block" }}>{c.itMessage}</span>
-                                : <span style={{ fontSize:11, color:T.subtle, fontFamily:"'JetBrains Mono',monospace" }}>—</span>}
-                            </td>
+
+                            {/* TICKET STATE */}
                             <td style={{ padding:"12px 14px", whiteSpace:"nowrap" }}>
                               {c.status === "transfer"
-                                ? <button className="ops-upd" onClick={() => setUpdateTarget(c)} style={{ padding:"4px 12px", borderRadius:2, background:T.amberBg, border:`1px solid ${T.amber}44`, color:T.amber, fontSize:9, fontWeight:700, letterSpacing:"0.12em", cursor:"pointer", fontFamily:"'Cinzel',serif" }}>UPDATE</button>
-                                : <span style={{ fontSize:9, letterSpacing:"0.12em", fontWeight:700, color: c.status==="cancel" ? T.red : T.green, fontFamily:"'Cinzel',serif" }}>{c.status==="cancel" ? "CANCELLED" : "CLOSED"}</span>}
+                                ? <button className="ops-upd" onClick={() => setUpdateTarget(c)}
+                                    style={{ padding:"4px 12px", borderRadius:2, background:T.amberBg, border:`1px solid ${T.amber}44`, color:T.amber, fontSize:9, fontWeight:700, letterSpacing:"0.12em", cursor:"pointer", fontFamily:"'Cinzel',serif" }}>
+                                    UPDATE
+                                  </button>
+                                : <span style={{ fontSize:9, letterSpacing:"0.12em", fontWeight:700, color: c.status==="cancel" ? T.red : T.green, fontFamily:"'Cinzel',serif" }}>
+                                    {c.status === "cancel" ? "CANCELLED" : "CLOSED"}
+                                  </span>}
                             </td>
                           </tr>
                         );
@@ -277,25 +288,24 @@ export default function ManagerDashboard() {
                 <span style={{ width:7, height:7, borderRadius:"50%", flexShrink:0, background: teamId ? T.green : T.red, boxShadow: teamId ? `0 0 6px ${T.green}` : "none" }} />
                 <div>
                   <p style={{ margin:0, fontSize:9, color:T.muted, letterSpacing:"0.14em", fontFamily:"'Cinzel',serif" }}>{teamId ? "TEAM RESOLVED" : "TEAM NOT FOUND"}</p>
-                  <p style={{ margin:"2px 0 0", fontSize:11, color: teamId ? T.gold : T.red, fontFamily:"'JetBrains Mono',monospace" }}>{teamId ? `${teamId.slice(0,24)}…` : "Please wait or refresh the page"}</p>
+                  <p style={{ margin:"2px 0 0", fontSize:11, color: teamId ? T.gold : T.red, fontFamily:"'JetBrains Mono',monospace" }}>{teamId ? `${String(teamId).slice(0,24)}…` : "Please wait or refresh"}</p>
                 </div>
               </div>
 
-              <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding: isMobile ? "22px 18px" : "28px 26px 24px", animation:"opsFadeUp .28s .05s ease both" }}>
-                <p style={{ margin:0, fontSize:8, letterSpacing:"0.22em", color:T.gold, fontFamily:"'Cinzel',serif" }}>— NEW REQUEST</p>
-                <h2 style={{ margin:"4px 0 22px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>Create Campaign</h2>
+              <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding: isMobile ? "22px 18px" : "28px 26px 24px" }}>
+                <h2 style={{ margin:"0 0 22px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif" }}>Create Campaign</h2>
 
                 {createError && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:18, background:T.redBg, border:`1px solid ${T.red}44`, color:T.red, fontSize:12 }}>{createError}</div>}
-                {createOk    && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:18, background:T.greenBg, border:`1px solid ${T.green}44`, color:T.green, fontSize:11, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>✓ CAMPAIGN CREATED — Redirecting…</div>}
+                {createOk    && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:18, background:T.greenBg, border:`1px solid ${T.green}44`, color:T.green, fontSize:11, fontFamily:"'Cinzel',serif" }}>✓ CAMPAIGN CREATED</div>}
 
                 <form onSubmit={handleCreate}>
                   <Field label="MESSAGE" hint="required">
                     <textarea className="ops-focus" value={createForm.message}
                       onChange={e => setCreateForm(f => ({ ...f, message: e.target.value }))}
-                      placeholder="Describe the campaign request in detail…" rows={4} required
+                      placeholder="Describe the campaign request…" rows={4} required
                       style={{ ...inputSx, resize:"vertical", lineHeight:1.6 }} />
                   </Field>
-                  <Field label="REQUESTED DATE / TIME" hint="optional — defaults to now">
+                  <Field label="REQUESTED DATE / TIME" hint="optional">
                     <input type="datetime-local" className="ops-focus" value={createForm.requestedAt}
                       onChange={e => setCreateForm(f => ({ ...f, requestedAt: e.target.value }))}
                       style={{ ...inputSx, colorScheme:"dark" }} />
@@ -315,13 +325,12 @@ export default function ManagerDashboard() {
         {activeSection === "team" && (
           <div style={{ padding: isMobile ? "16px 14px" : "22px 28px", flex:1 }}>
             <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap:24, alignItems:"start" }}>
-              <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding:"24px 22px", animation:"opsFadeUp .22s ease" }}>
+              {/* Add PPC form */}
+              <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding:"24px 22px" }}>
                 <p style={{ margin:"0 0 4px", fontSize:8, letterSpacing:"0.22em", color:T.gold, fontFamily:"'Cinzel',serif" }}>— ADD MEMBER</p>
                 <h2 style={{ margin:"0 0 20px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif" }}>Add PPC Member</h2>
-
                 {userError && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:16, background:T.redBg, border:`1px solid ${T.red}44`, color:T.red, fontSize:12 }}>{userError}</div>}
-                {userOk    && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:16, background:T.greenBg, border:`1px solid ${T.green}44`, color:T.green, fontSize:11, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>✓ PPC MEMBER ADDED</div>}
-
+                {userOk    && <div style={{ padding:"10px 14px", borderRadius:3, marginBottom:16, background:T.greenBg, border:`1px solid ${T.green}44`, color:T.green, fontSize:11, fontFamily:"'Cinzel',serif" }}>✓ PPC MEMBER ADDED</div>}
                 <form onSubmit={handleCreateUser}>
                   <Field label="USERNAME" hint="required"><input className="ops-focus" type="text" value={userForm.username} onChange={e => setUserForm(f => ({ ...f, username: e.target.value }))} placeholder="e.g. john_doe" required style={inputSx} /></Field>
                   <Field label="EMAIL" hint="@satkartar.com or @skinrange.com"><input className="ops-focus" type="email" value={userForm.email} onChange={e => setUserForm(f => ({ ...f, email: e.target.value }))} placeholder="user@satkartar.com" required style={inputSx} /></Field>
@@ -332,6 +341,7 @@ export default function ManagerDashboard() {
                 </form>
               </div>
 
+              {/* PPC member list */}
               <div>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
                   <p style={{ margin:0, fontSize:8, color:T.muted, letterSpacing:"0.2em", fontFamily:"'Cinzel',serif" }}>TEAM MEMBERS ·</p>
@@ -340,16 +350,14 @@ export default function ManagerDashboard() {
                     <GoldBtn variant="outline" onClick={loadTeamInfo} style={{ padding:"5px 12px", fontSize:9 }}>REFRESH</GoldBtn>
                   </div>
                 </div>
-
                 {teamLoading ? (
                   <div style={{ padding:"40px 20px", textAlign:"center", color:T.muted }}>
-                    <div style={{ marginBottom:10, color:T.gold, fontSize:22 }}>◈</div>Loading members…
+                    <div style={{ marginBottom:10, color:T.gold, fontSize:22 }}>◈</div>Loading…
                   </div>
                 ) : ppcMembers.length === 0 ? (
                   <div style={{ padding:"40px 20px", textAlign:"center", background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4 }}>
                     <div style={{ fontSize:24, color:T.subtle, marginBottom:12, fontFamily:"'Cinzel',serif" }}>◇</div>
                     <p style={{ margin:0, fontSize:14, color:T.white, fontFamily:"'Cinzel',serif" }}>No PPC Members Yet</p>
-                    <p style={{ margin:"6px 0 0", fontSize:13, color:T.muted }}>Add your first PPC member using the form.</p>
                   </div>
                 ) : (
                   <div style={{ display:"flex", flexDirection:"column", gap:10 }}>

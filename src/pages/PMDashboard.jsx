@@ -1,28 +1,26 @@
 /**
- * PMDashboard — fixed version.
+ * PMDashboard — fully fixed.
  *
- * FIX 1 — User section now shows users (was always empty).
- *   Root cause: GET /user/list endpoint didn't exist. Now added to backend.
- *   Structure: 3 tabs — Managers (with team) | PPCs (with manager) | IT
- *
- * FIX 2 — Socket notifications enabled (were commented out).
- *   campaign:it_queued added to socket handlers.
- *
- * FIX 3 — Notification messages include performer name.
- *
- * FIX 4 — handleAction uses campaignService layer, not raw api call.
+ * FIXES:
+ * - Socket enabled (was commented out)
+ * - campaign:it_queued handler added
+ * - No local addNotification calls — socket-only
+ * - Users section shows 3-tab layout (Managers / PPCs / IT)
+ * - "Pending" stat cards in open-requests section
+ * - handleAction uses updateCampaign service (not raw api.post)
  */
 import { useEffect, useState, useCallback, useMemo } from "react";
 
 import useAuthStore  from "../stores/useAuthStore.js";
 import useNotifStore from "../stores/useNotificationStore.js";
 
-import { useResponsive }                      from "../hooks/useResponsive.js";
-import { useSocket }                          from "../hooks/useSocket.js";
-import { useLogout }                          from "../hooks/useLogout.js";
-import { T }                                  from "../constants/theme.js";
-import { fetchCampaigns, updateCampaign }     from "../services/campaignService.js";
-import { fetchUsers, deleteUser }             from "../services/userService.js";
+import { useResponsive }                   from "../hooks/useResponsive.js";
+import { useSocket }                       from "../hooks/useSocket.js";
+import { useLogout }                       from "../hooks/useLogout.js";
+import { T }                               from "../constants/theme.js";
+import { OPEN_REQUEST_CARDS }              from "../constants/filterCards.js";
+import { fetchCampaigns, updateCampaign }  from "../services/campaignService.js";
+import { fetchUsers, deleteUser }          from "../services/userService.js";
 
 import OpsGlobalStyles  from "../components/common/OpsGlobalStyles.jsx";
 import GoldBtn          from "../components/common/GoldBtn.jsx";
@@ -32,7 +30,7 @@ import ActionModal      from "../components/campaigns/ActionModal.jsx";
 import CampaignsTable   from "../components/campaigns/CampaignsTable.jsx";
 import DeleteUserModal  from "../components/users/DeleteUserModal.jsx";
 import CreateUserForm   from "../components/users/CreateUserForm.jsx";
-import PMUserSection from "../components/users/PmUserSection.jsx";
+import PMUserSection    from "../components/users/PMUserSection.jsx";
 
 export default function PMDashboard() {
   const user            = useAuthStore(s => s.user);
@@ -43,47 +41,45 @@ export default function PMDashboard() {
   const [activeSection, setActiveSection] = useState("campaigns");
   const [sidebarOpen,   setSidebarOpen]   = useState(false);
 
-  // Campaign state (local — PM uses own state, not Zustand store)
   const [campaigns,    setCampaigns]    = useState([]);
   const [camLoading,   setCamLoading]   = useState(true);
   const [actionTarget, setActionTarget] = useState(null);
 
-  // User state
   const [users,        setUsers]        = useState([]);
   const [userLoading,  setUserLoading]  = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  // ── Socket — FIX: was commented out, now active ──────────────────────────────
+  // ── Socket ─────────────────────────────────────────────────────────────────
   useSocket({
     "campaign:created": c => {
-      setCampaigns(p => [c, ...p]);
+      setCampaigns(p => {
+        if (p.some(x => x._id === c._id)) return p;
+        return [c, ...p];
+      });
       addNotification(`Campaign created by ${c.performerName || "someone"}`);
     },
     "campaign:updated": c => {
       setCampaigns(p => p.map(x => x._id === c._id ? c : x));
-      const msg = c.status === "cancel"
+      const msg = c.status === "cancel" || c.action === "cancel"
         ? `Campaign cancelled by ${c.performerName || "someone"}`
         : `Campaign updated by ${c.performerName || "someone"}`;
       addNotification(msg);
     },
-    // FIX: was missing — PM needs to react to their own approvals received back
     "campaign:it_queued": c => {
       setCampaigns(p => p.map(x => x._id === c._id ? c : x));
-      addNotification(`Campaign approved by ${c.performerName || "PM"} — forwarded to IT`);
+      addNotification(`Campaign approved by ${c.performerName || "PM"} — sent to IT`);
     },
-    "campaign:deleted": d => {
-      setCampaigns(p => p.filter(x => x._id !== d._id));
-    },
+    "campaign:deleted": d => setCampaigns(p => p.filter(x => x._id !== d._id)),
     "campaign:it_ack": c => {
       setCampaigns(p => p.map(x => x._id === c._id ? c : x));
       const msg = c.acknowledgement === "done"
-        ? `${c.performerName || "IT"} marked campaign as Done`
+        ? `${c.performerName || "IT"} completed campaign`
         : `${c.performerName || "IT"} could not complete campaign`;
       addNotification(msg);
     },
   });
 
-  // ── Load campaigns ────────────────────────────────────────────────────────────
+  // ── Load campaigns ─────────────────────────────────────────────────────────
   const loadCampaigns = useCallback(async () => {
     setCamLoading(true);
     try   { setCampaigns(await fetchCampaigns()); }
@@ -93,20 +89,19 @@ export default function PMDashboard() {
 
   useEffect(() => { loadCampaigns(); }, [loadCampaigns]);
 
-  // ── Load users ────────────────────────────────────────────────────────────────
+  // ── Load users ─────────────────────────────────────────────────────────────
   const loadUsers = useCallback(async () => {
     setUserLoading(true);
     try {
-      const data = await fetchUsers();   // GET /user/list — now exists in backend
+      const data = await fetchUsers(); // GET /user/list — backend endpoint now exists
       if (data) {
         setUsers(data);
       } else {
-        // Fallback: derive unique creators from campaigns (incomplete data)
         const map = new Map();
         campaigns.forEach(c => {
-          if (c.createdBy && !map.has(c.createdBy._id ?? c.createdBy)) {
+          if (c.createdBy) {
             const u = typeof c.createdBy === "object" ? c.createdBy : { _id: c.createdBy };
-            map.set(u._id, u);
+            if (!map.has(u._id)) map.set(u._id, u);
           }
         });
         setUsers([...map.values()]);
@@ -118,7 +113,7 @@ export default function PMDashboard() {
     if (activeSection === "users") loadUsers();
   }, [activeSection, loadUsers]);
 
-  // ── Derived ───────────────────────────────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────
   const openRequests   = useMemo(() => campaigns.filter(c => c.action === "approve" && !c.acknowledgement), [campaigns]);
   const closedRequests = useMemo(() => campaigns.filter(c =>
     c.status === "cancel" || c.action === "cancel" || c.acknowledgement
@@ -128,33 +123,34 @@ export default function PMDashboard() {
     users.filter(u => ["manager","ppc","it"].includes(u.role)).length
   , [users]);
 
-  // ── Handlers ──────────────────────────────────────────────────────────────────
+  // Open request stat counts
+  const openStats = useMemo(() => ({
+    waiting: openRequests.filter(c => !c.acknowledgement).length,
+    acked:   campaigns.filter(c => c.action === "approve" && c.acknowledgement === "done").length,
+    done:    campaigns.filter(c => c.status === "done").length,
+  }), [campaigns, openRequests]);
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
   const goTo = section => { setActiveSection(section); setSidebarOpen(false); };
 
-  // FIX: uses campaignService.updateCampaign instead of raw api.post
   const handleAction = useCallback(async (campaignId, { action, pmMessage, scheduleAt }) => {
     const updated = await updateCampaign(campaignId, { action, pmMessage, scheduleAt });
     if (updated) {
       setCampaigns(prev => prev.map(c => c._id === updated._id ? updated : c));
-      addNotification(action === "approve"
-        ? "Campaign approved — forwarded to IT"
-        : "Campaign cancelled");
+      // FIX: no local addNotification — socket fires it
     }
-  }, [addNotification]);
+  }, []);
 
   const handleDeleteUser = useCallback(async id => {
     await deleteUser(id);
     setUsers(prev => prev.filter(u => u._id !== id));
-    addNotification("User deleted successfully");
-  }, [addNotification]);
+    // FIX: no local addNotification
+  }, []);
 
-  const handleUserCreated = useCallback(username => {
-    addNotification(`User "${username}" created`);
-    // Reload users to show the new user immediately
+  const handleUserCreated = useCallback(() => {
     if (activeSection === "users") loadUsers();
-  }, [addNotification, activeSection, loadUsers]);
+  }, [activeSection, loadUsers]);
 
-  // ── Nav ───────────────────────────────────────────────────────────────────────
   const NAV = [
     { id: "campaigns",       label: "Campaigns",       count: campaigns.length       },
     { id: "users",           label: "Users",           count: totalUsers             },
@@ -171,14 +167,12 @@ export default function PMDashboard() {
     "closed-requests":"Closed Requests",
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={{ display:"flex", minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'DM Sans',sans-serif" }}>
       <OpsGlobalStyles />
 
       {isMobile && sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)}
-          style={{ position:"fixed", inset:0, zIndex:7999, background:"rgba(0,0,0,0.72)" }} />
+        <div onClick={() => setSidebarOpen(false)} style={{ position:"fixed", inset:0, zIndex:7999, background:"rgba(0,0,0,0.72)" }} />
       )}
 
       <DashboardSidebar brandSub="PM PANEL" navItems={NAV} activeSection={activeSection}
@@ -193,7 +187,7 @@ export default function PMDashboard() {
 
         <div style={{ padding: isMobile ? "16px 14px" : "22px 28px", flex:1 }}>
 
-          {/* ── ALL CAMPAIGNS ─────────────────────────────────────────────── */}
+          {/* ── ALL CAMPAIGNS ─────────────────────────────────────────── */}
           {activeSection === "campaigns" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
               <CampaignsTable campaigns={campaigns} loading={camLoading}
@@ -202,60 +196,77 @@ export default function PMDashboard() {
             </div>
           )}
 
-          {/* ── USERS (3-tab) ──────────────────────────────────────────────── */}
+          {/* ── USERS (3-tab) ──────────────────────────────────────────── */}
           {activeSection === "users" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
               <PMUserSection
                 users={users}
                 loading={userLoading}
                 onDelete={target => setDeleteTarget(target)}
-                onRefresh={loadUsers}
-              />
+                onRefresh={loadUsers} />
             </div>
           )}
 
-          {/* ── MANAGE USERS ──────────────────────────────────────────────── */}
+          {/* ── MANAGE USERS ──────────────────────────────────────────── */}
           {activeSection === "manage-users" && (
             <div style={{ animation:"opsFadeUp .22s ease", maxWidth:540 }}>
               <div style={{ padding:"13px 18px", marginBottom:22, border:`1px solid ${T.goldBorder}`, borderRadius:4, background:T.bgCard }}>
                 <p style={{ margin:0, fontSize:12, color:T.muted, lineHeight:1.6 }}>
-                  As a Process Manager, you can create Manager, IT, and other
-                  Process Manager accounts. Managers create PPC users within their team.
+                  As a Process Manager, you can create Manager, IT, and other Process Manager accounts.
                 </p>
               </div>
               <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding: isMobile ? "22px 18px" : "28px 26px 24px" }}>
                 <h2 style={{ margin:"0 0 22px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>
                   Create User Account
                 </h2>
-                <CreateUserForm
-                  allowedRoles={["manager", "process manager", "it"]}
-                  onSuccess={handleUserCreated} />
+                <CreateUserForm allowedRoles={["manager","process manager","it"]} onSuccess={handleUserCreated} />
               </div>
             </div>
           )}
 
-          {/* ── OPEN REQUESTS ─────────────────────────────────────────────── */}
+          {/* ── OPEN REQUESTS ─────────────────────────────────────────── */}
           {activeSection === "open-requests" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
+              {/* Stat cards for open requests */}
+              <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:20 }}>
+                {OPEN_REQUEST_CARDS.map(card => (
+                  <div key={card.id} style={{
+                    flex:"1 1 0", minWidth:120, padding:"14px 16px 12px", borderRadius:4,
+                    background:T.bgCard, border:`1px solid ${T.goldBorder}`, userSelect:"none",
+                  }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
+                      <span style={{ width:5, height:5, borderRadius:"50%", background:card.color, flexShrink:0 }} />
+                      <span style={{ fontSize:8, fontWeight:700, letterSpacing:"0.18em", color:T.muted, fontFamily:"'Cinzel',serif" }}>
+                        {card.label.toUpperCase()}
+                      </span>
+                    </div>
+                    <div style={{ fontSize:26, fontWeight:700, color:T.white, fontFamily:"'Cinzel',serif", lineHeight:1 }}>
+                      {openStats[card.id] ?? 0}
+                    </div>
+                    <div style={{ fontSize:9, color:T.muted, marginTop:4 }}>campaigns</div>
+                  </div>
+                ))}
+              </div>
+
               <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:20, padding:"12px 18px", background:T.bgCard, border:`1px solid ${T.teal}33`, borderRadius:4 }}>
                 <span style={{ width:8, height:8, borderRadius:"50%", background:T.teal, flexShrink:0, boxShadow:`0 0 8px ${T.teal}` }} />
                 <p style={{ margin:0, fontSize:12, color:T.muted, lineHeight:1.6 }}>
-                  These campaigns have been <strong style={{ color:T.teal }}>approved</strong> and are waiting for IT acknowledgement.
+                  Campaigns <strong style={{ color:T.teal }}>approved</strong> by PM — awaiting IT acknowledgement.
                 </p>
               </div>
               <CampaignsTable campaigns={openRequests} loading={camLoading}
                 onAction={setActionTarget} isMobile={isMobile}
-                title="OPEN · AWAITING IT ACK" showActionBtn={false} />
+                title="OPEN · AWAITING IT" showActionBtn={false} />
             </div>
           )}
 
-          {/* ── CLOSED REQUESTS ───────────────────────────────────────────── */}
+          {/* ── CLOSED REQUESTS ───────────────────────────────────────── */}
           {activeSection === "closed-requests" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
               <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:20, padding:"12px 18px", background:T.bgCard, border:`1px solid ${T.subtle}`, borderRadius:4 }}>
                 <span style={{ width:8, height:8, borderRadius:"50%", background:T.muted, flexShrink:0 }} />
                 <p style={{ margin:0, fontSize:12, color:T.muted, lineHeight:1.6 }}>
-                  These campaigns are <strong style={{ color:T.text }}>closed</strong> — cancelled or acknowledged by IT.
+                  Closed campaigns — cancelled or acknowledged by IT.
                 </p>
               </div>
               <CampaignsTable campaigns={closedRequests} loading={camLoading}
