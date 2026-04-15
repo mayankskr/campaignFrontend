@@ -1,29 +1,28 @@
 /**
- * PMDashboard — final refactored version.
+ * PMDashboard — fixed version.
  *
- * CHANGES from previous pass:
- *  - handleLogout    → useLogout() hook
- *  - Socket enabled  → useSocket() (was commented out; now active via hook)
- *  - api.get("/campaign/get") → fetchCampaigns() service
- *  - api.post("/user/delete") → deleteUser() service
- *  - CreateUserForm  → <CreateUserForm allowedRoles={[...]}> (replaces local form)
- *  - UserCard        → <UserCard showDetails>
- *  - CampaignsTable  → <CampaignsTable> (already extracted)
- *  - ActionModal     → <ActionModal> (already extracted)
- *  - DeleteUserModal → <DeleteUserModal> (already extracted)
+ * FIX 1 — User section now shows users (was always empty).
+ *   Root cause: GET /user/list endpoint didn't exist. Now added to backend.
+ *   Structure: 3 tabs — Managers (with team) | PPCs (with manager) | IT
+ *
+ * FIX 2 — Socket notifications enabled (were commented out).
+ *   campaign:it_queued added to socket handlers.
+ *
+ * FIX 3 — Notification messages include performer name.
+ *
+ * FIX 4 — handleAction uses campaignService layer, not raw api call.
  */
 import { useEffect, useState, useCallback, useMemo } from "react";
 
 import useAuthStore  from "../stores/useAuthStore.js";
 import useNotifStore from "../stores/useNotificationStore.js";
 
-import { useResponsive }          from "../hooks/useResponsive.js";
-import { useSocket }              from "../hooks/useSocket.js";
-import { useLogout }              from "../hooks/useLogout.js";
-import { T }                      from "../constants/theme.js";
-import { fetchCampaigns }         from "../services/campaignService.js";
-import { fetchUsers, deleteUser } from "../services/userService.js";
-import api                        from "../api/axios.js";
+import { useResponsive }                      from "../hooks/useResponsive.js";
+import { useSocket }                          from "../hooks/useSocket.js";
+import { useLogout }                          from "../hooks/useLogout.js";
+import { T }                                  from "../constants/theme.js";
+import { fetchCampaigns, updateCampaign }     from "../services/campaignService.js";
+import { fetchUsers, deleteUser }             from "../services/userService.js";
 
 import OpsGlobalStyles  from "../components/common/OpsGlobalStyles.jsx";
 import GoldBtn          from "../components/common/GoldBtn.jsx";
@@ -33,7 +32,7 @@ import ActionModal      from "../components/campaigns/ActionModal.jsx";
 import CampaignsTable   from "../components/campaigns/CampaignsTable.jsx";
 import DeleteUserModal  from "../components/users/DeleteUserModal.jsx";
 import CreateUserForm   from "../components/users/CreateUserForm.jsx";
-import UserCard         from "../components/users/UserCard.jsx";
+import PMUserSection from "../components/users/PmUserSection.jsx";
 
 export default function PMDashboard() {
   const user            = useAuthStore(s => s.user);
@@ -44,22 +43,47 @@ export default function PMDashboard() {
   const [activeSection, setActiveSection] = useState("campaigns");
   const [sidebarOpen,   setSidebarOpen]   = useState(false);
 
+  // Campaign state (local — PM uses own state, not Zustand store)
   const [campaigns,    setCampaigns]    = useState([]);
   const [camLoading,   setCamLoading]   = useState(true);
   const [actionTarget, setActionTarget] = useState(null);
 
+  // User state
   const [users,        setUsers]        = useState([]);
   const [userLoading,  setUserLoading]  = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  /* ── Socket — now active (was commented out in original) ──────────────── */
+  // ── Socket — FIX: was commented out, now active ──────────────────────────────
   useSocket({
-    "campaign:created": c => { setCampaigns(p => [c, ...p]);                                   addNotification("New campaign created");    },
-    "campaign:updated": c => { setCampaigns(p => p.map(x => x._id === c._id ? c : x));        addNotification("Campaign updated");        },
-    "campaign:deleted": d => { setCampaigns(p => p.filter(x => x._id !== d._id)); },
-    "campaign:it_ack":  c => { setCampaigns(p => p.map(x => x._id === c._id ? c : x));        addNotification("IT acknowledged campaign"); },
+    "campaign:created": c => {
+      setCampaigns(p => [c, ...p]);
+      addNotification(`Campaign created by ${c.performerName || "someone"}`);
+    },
+    "campaign:updated": c => {
+      setCampaigns(p => p.map(x => x._id === c._id ? c : x));
+      const msg = c.status === "cancel"
+        ? `Campaign cancelled by ${c.performerName || "someone"}`
+        : `Campaign updated by ${c.performerName || "someone"}`;
+      addNotification(msg);
+    },
+    // FIX: was missing — PM needs to react to their own approvals received back
+    "campaign:it_queued": c => {
+      setCampaigns(p => p.map(x => x._id === c._id ? c : x));
+      addNotification(`Campaign approved by ${c.performerName || "PM"} — forwarded to IT`);
+    },
+    "campaign:deleted": d => {
+      setCampaigns(p => p.filter(x => x._id !== d._id));
+    },
+    "campaign:it_ack": c => {
+      setCampaigns(p => p.map(x => x._id === c._id ? c : x));
+      const msg = c.acknowledgement === "done"
+        ? `${c.performerName || "IT"} marked campaign as Done`
+        : `${c.performerName || "IT"} could not complete campaign`;
+      addNotification(msg);
+    },
   });
 
+  // ── Load campaigns ────────────────────────────────────────────────────────────
   const loadCampaigns = useCallback(async () => {
     setCamLoading(true);
     try   { setCampaigns(await fetchCampaigns()); }
@@ -69,13 +93,15 @@ export default function PMDashboard() {
 
   useEffect(() => { loadCampaigns(); }, [loadCampaigns]);
 
+  // ── Load users ────────────────────────────────────────────────────────────────
   const loadUsers = useCallback(async () => {
     setUserLoading(true);
     try {
-      const data = await fetchUsers();
+      const data = await fetchUsers();   // GET /user/list — now exists in backend
       if (data) {
         setUsers(data);
       } else {
+        // Fallback: derive unique creators from campaigns (incomplete data)
         const map = new Map();
         campaigns.forEach(c => {
           if (c.createdBy && !map.has(c.createdBy._id ?? c.createdBy)) {
@@ -89,24 +115,30 @@ export default function PMDashboard() {
   }, [campaigns]);
 
   useEffect(() => {
-    if (activeSection === "ppc-users") loadUsers();
+    if (activeSection === "users") loadUsers();
   }, [activeSection, loadUsers]);
 
+  // ── Derived ───────────────────────────────────────────────────────────────────
   const openRequests   = useMemo(() => campaigns.filter(c => c.action === "approve" && !c.acknowledgement), [campaigns]);
-  const closedRequests = useMemo(() => campaigns.filter(c => c.status === "cancel" || c.action === "cancel" || c.acknowledgement), [campaigns]);
+  const closedRequests = useMemo(() => campaigns.filter(c =>
+    c.status === "cancel" || c.action === "cancel" || c.acknowledgement
+  ), [campaigns]);
 
+  const totalUsers = useMemo(() =>
+    users.filter(u => ["manager","ppc","it"].includes(u.role)).length
+  , [users]);
+
+  // ── Handlers ──────────────────────────────────────────────────────────────────
   const goTo = section => { setActiveSection(section); setSidebarOpen(false); };
 
+  // FIX: uses campaignService.updateCampaign instead of raw api.post
   const handleAction = useCallback(async (campaignId, { action, pmMessage, scheduleAt }) => {
-    const res = await api.post("/campaign/update", {
-      campaignId, action,
-      pmMessage:  pmMessage  || undefined,
-      scheduleAt: scheduleAt || undefined,
-    });
-    const updated = res.data?.data;
+    const updated = await updateCampaign(campaignId, { action, pmMessage, scheduleAt });
     if (updated) {
       setCampaigns(prev => prev.map(c => c._id === updated._id ? updated : c));
-      addNotification(action === "approve" ? "Campaign approved — forwarded to IT" : "Campaign cancelled");
+      addNotification(action === "approve"
+        ? "Campaign approved — forwarded to IT"
+        : "Campaign cancelled");
     }
   }, [addNotification]);
 
@@ -118,30 +150,35 @@ export default function PMDashboard() {
 
   const handleUserCreated = useCallback(username => {
     addNotification(`User "${username}" created`);
-  }, [addNotification]);
+    // Reload users to show the new user immediately
+    if (activeSection === "users") loadUsers();
+  }, [addNotification, activeSection, loadUsers]);
 
+  // ── Nav ───────────────────────────────────────────────────────────────────────
   const NAV = [
     { id: "campaigns",       label: "Campaigns",       count: campaigns.length       },
-    { id: "ppc-users",       label: "PPC Users",       count: null                  },
-    { id: "manage-users",    label: "Manage Users",    count: null                  },
+    { id: "users",           label: "Users",           count: totalUsers             },
+    { id: "manage-users",    label: "Manage Users"                                   },
     { id: "open-requests",   label: "Open Requests",   count: openRequests.length   },
     { id: "closed-requests", label: "Closed Requests", count: closedRequests.length },
   ];
 
   const SECTION_TITLE = {
     campaigns:        "Campaigns",
-    "ppc-users":      "PPC Users",
+    users:            "Users",
     "manage-users":   "Manage Users",
     "open-requests":  "Open Requests",
     "closed-requests":"Closed Requests",
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={{ display:"flex", minHeight:"100vh", background:T.bg, color:T.text, fontFamily:"'DM Sans',sans-serif" }}>
       <OpsGlobalStyles />
 
       {isMobile && sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)} style={{ position:"fixed", inset:0, zIndex:7999, background:"rgba(0,0,0,0.72)" }} />
+        <div onClick={() => setSidebarOpen(false)}
+          style={{ position:"fixed", inset:0, zIndex:7999, background:"rgba(0,0,0,0.72)" }} />
       )}
 
       <DashboardSidebar brandSub="PM PANEL" navItems={NAV} activeSection={activeSection}
@@ -149,13 +186,14 @@ export default function PMDashboard() {
         isMobile={isMobile} open={sidebarOpen} />
 
       <main style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0 }}>
-        <DashboardHeader isMobile={isMobile} onMenuToggle={() => setSidebarOpen(v => !v)}
-          sidebarOpen={sidebarOpen}
+        <DashboardHeader isMobile={isMobile}
+          onMenuToggle={() => setSidebarOpen(v => !v)} sidebarOpen={sidebarOpen}
           title={SECTION_TITLE[activeSection] || "Dashboard"}
           subLabel="— PROCESS MANAGER" />
 
         <div style={{ padding: isMobile ? "16px 14px" : "22px 28px", flex:1 }}>
 
+          {/* ── ALL CAMPAIGNS ─────────────────────────────────────────────── */}
           {activeSection === "campaigns" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
               <CampaignsTable campaigns={campaigns} loading={camLoading}
@@ -164,45 +202,31 @@ export default function PMDashboard() {
             </div>
           )}
 
-          {activeSection === "ppc-users" && (
+          {/* ── USERS (3-tab) ──────────────────────────────────────────────── */}
+          {activeSection === "users" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-                <div style={{ padding:"2px 10px", borderRadius:2, background:T.goldDim, border:`1px solid ${T.goldBorder}`, fontSize:9, color:T.gold, fontFamily:"'JetBrains Mono',monospace" }}>{users.length} users loaded</div>
-                <GoldBtn variant="outline" onClick={loadUsers}>REFRESH</GoldBtn>
-              </div>
-
-              {userLoading ? (
-                <div style={{ padding:"52px 20px", textAlign:"center", color:T.muted }}>
-                  <div style={{ marginBottom:10, color:T.gold, fontSize:22 }}>◈</div>Loading users…
-                </div>
-              ) : users.length === 0 ? (
-                <div style={{ padding:"52px 20px", textAlign:"center", background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4 }}>
-                  <div style={{ fontSize:24, color:T.subtle, marginBottom:12, fontFamily:"'Cinzel',serif" }}>◇</div>
-                  <p style={{ margin:0, fontSize:14, color:T.white, fontFamily:"'Cinzel',serif" }}>No Users Found</p>
-                  <p style={{ margin:"6px 0 20px", fontSize:13, color:T.muted }}>Create users from the Manage Users section.</p>
-                  <GoldBtn variant="outline" onClick={() => goTo("manage-users")}>CREATE USER</GoldBtn>
-                </div>
-              ) : (
-                <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(280px, 1fr))", gap:14 }}>
-                  {users.map(u => (
-                    <UserCard key={u._id} user={u} showDetails
-                      onDelete={target => setDeleteTarget(target)} />
-                  ))}
-                </div>
-              )}
+              <PMUserSection
+                users={users}
+                loading={userLoading}
+                onDelete={target => setDeleteTarget(target)}
+                onRefresh={loadUsers}
+              />
             </div>
           )}
 
+          {/* ── MANAGE USERS ──────────────────────────────────────────────── */}
           {activeSection === "manage-users" && (
             <div style={{ animation:"opsFadeUp .22s ease", maxWidth:540 }}>
               <div style={{ padding:"13px 18px", marginBottom:22, border:`1px solid ${T.goldBorder}`, borderRadius:4, background:T.bgCard }}>
                 <p style={{ margin:0, fontSize:12, color:T.muted, lineHeight:1.6 }}>
-                  As a Process Manager, you can create Manager, IT, and other Process Manager accounts.
-                  Managers can create PPC users within their team.
+                  As a Process Manager, you can create Manager, IT, and other
+                  Process Manager accounts. Managers create PPC users within their team.
                 </p>
               </div>
               <div style={{ background:T.bgCard, border:`1px solid ${T.goldBorder}`, borderRadius:4, padding: isMobile ? "22px 18px" : "28px 26px 24px" }}>
-                <h2 style={{ margin:"0 0 22px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>Create User Account</h2>
+                <h2 style={{ margin:"0 0 22px", fontSize:15, fontWeight:600, color:T.white, fontFamily:"'Cinzel',serif", letterSpacing:"0.08em" }}>
+                  Create User Account
+                </h2>
                 <CreateUserForm
                   allowedRoles={["manager", "process manager", "it"]}
                   onSuccess={handleUserCreated} />
@@ -210,6 +234,7 @@ export default function PMDashboard() {
             </div>
           )}
 
+          {/* ── OPEN REQUESTS ─────────────────────────────────────────────── */}
           {activeSection === "open-requests" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
               <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:20, padding:"12px 18px", background:T.bgCard, border:`1px solid ${T.teal}33`, borderRadius:4 }}>
@@ -224,6 +249,7 @@ export default function PMDashboard() {
             </div>
           )}
 
+          {/* ── CLOSED REQUESTS ───────────────────────────────────────────── */}
           {activeSection === "closed-requests" && (
             <div style={{ animation:"opsFadeUp .22s ease" }}>
               <div style={{ display:"flex", gap:12, alignItems:"center", marginBottom:20, padding:"12px 18px", background:T.bgCard, border:`1px solid ${T.subtle}`, borderRadius:4 }}>
@@ -240,8 +266,13 @@ export default function PMDashboard() {
         </div>
       </main>
 
-      {actionTarget && <ActionModal campaign={actionTarget} onClose={() => setActionTarget(null)} onSave={handleAction} />}
-      {deleteTarget  && <DeleteUserModal target={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={id => handleDeleteUser(id)} />}
+      {actionTarget && (
+        <ActionModal campaign={actionTarget} onClose={() => setActionTarget(null)} onSave={handleAction} />
+      )}
+      {deleteTarget && (
+        <DeleteUserModal target={deleteTarget} onClose={() => setDeleteTarget(null)}
+          onConfirm={id => handleDeleteUser(id)} />
+      )}
     </div>
   );
 }
